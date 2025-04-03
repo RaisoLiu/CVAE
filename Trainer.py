@@ -110,7 +110,10 @@ class VAE_Model(nn.Module):
             for (img, label) in (pbar := tqdm(train_loader, ncols=120)):
                 img = img.to(self.args.device)
                 label = label.to(self.args.device)
-                loss = self.training_one_step(img, label, adapt_TeacherForcing)
+                if adapt_TeacherForcing:
+                    loss = self.training_one_step_with_teacher_forcing(img, label)
+                else:
+                    loss = self.training_one_step_without_teacher_forcing(img, label)
                 train_losses.append(loss.detach().cpu())
                 
                 beta = self.kl_annealing.get_beta()
@@ -137,8 +140,69 @@ class VAE_Model(nn.Module):
             label = label.to(self.args.device)
             loss = self.val_one_step(img, label)
             self.tqdm_bar('val', pbar, loss.detach().cpu(), lr=self.scheduler.get_last_lr()[0])
+
+
+    def training_one_step_without_teacher_forcing(self, img, label):
+        pass
+        # img_batch: (Batch_size, Time_step, Channel, Height, Width) = (2, 16, 3, 32, 64)
+        batch_size = img.shape[0]
+        time_step = img.shape[1]
+        channel = img.shape[2]
+        height = img.shape[3]
+        width = img.shape[4]
+
+        f_dim = self.args.F_dim
+        l_dim = self.args.L_dim
+        n_dim = self.args.N_dim
+
+        beta = self.kl_annealing.get_beta()
+
+        
+
+
+        no_head_label = label[:,1:].reshape(-1, channel, height, width)
+        no_head_label_emb = self.label_transformation(no_head_label)
+        no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, l_dim, height, width)
+        
+
+
+
+        mse = 0
+        prev_frame = img[:,0].reshape(-1, channel, height, width)
+        prev_frame_emb = self.frame_transformation(prev_frame)
+        prev_z = torch.randn(batch_size, n_dim, height, width).to(self.args.device)
+        pred_no_head_img = []
+        mu_list = []
+        logvar_list = []
+        for i in range(1, time_step):
+            decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
+            img_hat = self.Generator(decoded)
+            pred_no_head_img.append(img_hat.detach())
+            prev_frame = img_hat
+            prev_frame_emb = self.frame_transformation(prev_frame)
+            z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
+            prev_z = z.detach()
+            mu_list.append(mu)
+            logvar_list.append(logvar)
+
+        pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
+        mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), img[:,1:].reshape(-1, channel, height, width))
+
+        mu = torch.stack(mu_list, dim=1)
+        logvar = torch.stack(logvar_list, dim=1)
+        kld = self.kl_criterion(mu, logvar)
+
+        loss = mse + beta * kld
+        self.optim.zero_grad()
+        loss.backward()
+        self.optimizer_step()
+        return loss
+
+        
+        
+
     
-    def training_one_step(self, img, label, adapt_TeacherForcing):
+    def training_one_step_with_teacher_forcing(self, img, label):
         # img_batch: (Batch_size, Time_step, Channel, Height, Width) = (2, 16, 3, 32, 64)
         batch_size = img.shape[0]
         time_step = img.shape[1]
@@ -156,14 +220,13 @@ class VAE_Model(nn.Module):
         
         no_head_frame_emb = frame_emb[:,1:].reshape(-1, f_dim, height, width)
         no_tail_frame_emb = frame_emb[:,:-1].reshape(-1, f_dim, height, width)
+
+        no_head_label = label[:,1:].reshape(-1, channel, height, width)
+        no_head_label_emb = self.label_transformation(no_head_label)
         
-        label_batch_time_z = self.label_transformation(label.view(-1, channel, height, width))
-        label_batch_time_z = label_batch_time_z.view(batch_size, time_step, l_dim, height, width)
-        no_head_label_emb = label_batch_time_z[:,1:].reshape(-1, l_dim, height, width)
-
-
         z, mu, logvar = self.Gaussian_Predictor(no_head_frame_emb, no_head_label_emb)
         kld = self.kl_criterion(mu, logvar)
+
 
         decoded = self.Decoder_Fusion(no_tail_frame_emb, no_head_label_emb, z)
         img_hat = self.Generator(decoded)
@@ -293,7 +356,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_epoch',     type=int, default=70,     help="number of total epoch")
     parser.add_argument('--per_save',      type=int, default=3,      help="Save checkpoint every seted epoch")
     parser.add_argument('--partial',       type=float, default=1.0,  help="Part of the training dataset to be trained")
-    parser.add_argument('--train_vi_len',  type=int, default=3,     help="Training video length")
+    parser.add_argument('--train_vi_len',  type=int, default=8,     help="Training video length")
     parser.add_argument('--val_vi_len',    type=int, default=630,    help="valdation video length")
     parser.add_argument('--frame_H',       type=int, default=32,     help="Height input image to be resize")
     parser.add_argument('--frame_W',       type=int, default=64,     help="Width input image to be resize")
