@@ -80,6 +80,7 @@ class Gaussian_Predictor(nn.Sequential):
         eps = torch.randn_like(std)
         return eps * std + mu
 
+
     def forward(self, img, label):
         feature = torch.cat([img, label], dim=1)
         parm = super().forward(feature)

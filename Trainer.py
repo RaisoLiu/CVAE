@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from torchvision import transforms
 from torch.utils.data import DataLoader
+from torch.utils import tensorboard
 
 from modules import Generator, Gaussian_Predictor, Decoder_Fusion, Label_Encoder, RGB_Encoder
 
@@ -22,7 +23,7 @@ from math import log10
 
 def Generate_PSNR(imgs1, imgs2, data_range=1.):
     """PSNR for torch tensor"""
-    mse = nn.functional.mse_loss(imgs1, imgs2) # wrong computation for batch size > 1
+    mse = nn.functional.mse_loss(imgs1.squeeze(), imgs2.squeeze()) # wrong computation for batch size > 1
     psnr = 20 * log10(data_range) - 10 * torch.log10(mse)
     return psnr
 
@@ -82,11 +83,11 @@ class VAE_Model(nn.Module):
         # Generative model
         self.Generator            = Generator(input_nc=args.D_out_dim, output_nc=3)
         
-        self.optim      = optim.Adam(self.parameters(), lr=self.args.lr)
+        self.optim      = optim.AdamW(self.parameters(), lr=self.args.lr)
         self.scheduler  = optim.lr_scheduler.MultiStepLR(self.optim, milestones=[2, 5], gamma=0.1)
         self.kl_annealing = kl_annealing(args, current_epoch=0)
         self.mse_criterion = nn.MSELoss()
-        self.current_epoch = 0
+        self.current_epoch = 1
         
         # Teacher forcing arguments
         self.tfr = args.tfr
@@ -96,7 +97,7 @@ class VAE_Model(nn.Module):
         self.train_vi_len = args.train_vi_len
         self.val_vi_len   = args.val_vi_len
         self.batch_size = args.batch_size
-        
+        self.writer = tensorboard.SummaryWriter(f"{self.args.save_root}/kl-type_{args.kl_anneal_type}_tfr_{args.tfr}_teacher-decay_{args.tfr_d_step}")
         
     def forward(self, img, label):
         pass
@@ -108,6 +109,7 @@ class VAE_Model(nn.Module):
             
             train_losses = []
             for (img, label) in (pbar := tqdm(train_loader, ncols=120)):
+                
                 img = img.to(self.args.device)
                 label = label.to(self.args.device)
                 if adapt_TeacherForcing:
@@ -123,8 +125,12 @@ class VAE_Model(nn.Module):
                     self.tqdm_bar('train [TeacherForcing: OFF, {:.1f}], beta: {}'.format(self.tfr, beta), pbar, loss.detach().cpu(), lr=self.scheduler.get_last_lr()[0])
             
             if self.current_epoch % self.args.per_save == 0:
-                self.save(os.path.join(self.args.save_root, f"epoch={self.current_epoch}.ckpt"))
+                self.save(os.path.join(self.args.save_root, f"epoch-{self.current_epoch}.ckpt"))
                 
+            print(f"Epoch {self.current_epoch} train loss: {np.mean(train_losses)}, beta: {beta}, tfr: {self.tfr}")
+            self.writer.add_scalar('Loss/train', np.mean(train_losses), self.current_epoch)
+            self.writer.add_scalar('beta', beta, self.current_epoch)
+            self.writer.add_scalar('tfr', self.tfr, self.current_epoch)
             self.eval()
             self.current_epoch += 1
             self.scheduler.step()
@@ -132,18 +138,26 @@ class VAE_Model(nn.Module):
             self.kl_annealing.update()
             
             
+            
     @torch.no_grad()
     def eval(self):
         val_loader = self.val_dataloader()
+        PSNRS = []
+        val_losses = []
         for (img, label) in (pbar := tqdm(val_loader, ncols=120)):
             img = img.to(self.args.device)
             label = label.to(self.args.device)
-            loss = self.val_one_step(img, label)
+            loss, PSNR = self.val_one_step(img, label)
+            val_losses.append(loss.detach().cpu())
+            PSNRS.append(PSNR)
             self.tqdm_bar('val', pbar, loss.detach().cpu(), lr=self.scheduler.get_last_lr()[0])
+        
+        print(f"Epoch {self.current_epoch} val loss: {np.mean(val_losses)}, PSNR: {np.mean(PSNRS)}")
+        self.writer.add_scalar('Loss/val', np.mean(val_losses), self.current_epoch)
+        self.writer.add_scalar('PSNR/val', np.mean(PSNRS), self.current_epoch)
 
 
     def training_one_step_without_teacher_forcing(self, img, label):
-        pass
         # img_batch: (Batch_size, Time_step, Channel, Height, Width) = (2, 16, 3, 32, 64)
         batch_size = img.shape[0]
         time_step = img.shape[1]
@@ -164,10 +178,6 @@ class VAE_Model(nn.Module):
         no_head_label_emb = self.label_transformation(no_head_label)
         no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, l_dim, height, width)
         
-
-
-
-        mse = 0
         prev_frame = img[:,0].reshape(-1, channel, height, width)
         prev_frame_emb = self.frame_transformation(prev_frame)
         prev_z = torch.randn(batch_size, n_dim, height, width).to(self.args.device)
@@ -244,13 +254,62 @@ class VAE_Model(nn.Module):
         return kl_criterion(mu, logvar, self.batch_size)
 
 
-
-        # 
-
     
     def val_one_step(self, img, label):
-        # TODO
-        raise NotImplementedError
+        
+        # img_batch: (Batch_size, Time_step, Channel, Height, Width) = (2, 16, 3, 32, 64)
+        batch_size = img.shape[0]
+        time_step = img.shape[1]
+        channel = img.shape[2]
+        height = img.shape[3]
+        width = img.shape[4]
+
+        f_dim = self.args.F_dim
+        l_dim = self.args.L_dim
+        n_dim = self.args.N_dim
+
+        beta = self.kl_annealing.get_beta()
+        PSNR = []
+        
+
+
+        no_head_label = label[:,1:].reshape(-1, channel, height, width)
+        no_head_label_emb = self.label_transformation(no_head_label)
+        no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, l_dim, height, width)
+        
+        prev_frame = img[:,0].reshape(-1, channel, height, width)
+        prev_frame_emb = self.frame_transformation(prev_frame)
+        prev_z = torch.randn(batch_size, n_dim, height, width).to(self.args.device)
+        pred_no_head_img = []
+        mu_list = []
+        logvar_list = []
+
+        
+        for i in range(1, time_step):
+            decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
+            img_hat = self.Generator(decoded)
+            pred_no_head_img.append(img_hat.detach())
+            prev_frame = img_hat
+            prev_frame_emb = self.frame_transformation(prev_frame)
+            z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
+            prev_z = z.detach()
+            mu_list.append(mu)
+            logvar_list.append(logvar)
+            PSNR.append(Generate_PSNR(img_hat, img[:,i].unsqueeze(0)).item())
+
+        pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
+        mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), img[:,1:].reshape(-1, channel, height, width))
+
+        mu = torch.stack(mu_list, dim=1)
+        logvar = torch.stack(logvar_list, dim=1)
+        kld = self.kl_criterion(mu, logvar)
+
+        loss = mse + beta * kld
+        return loss, np.mean(PSNR)
+
+
+
+
                 
     def make_gif(self, images_list, img_name):
         new_list = []
@@ -292,8 +351,10 @@ class VAE_Model(nn.Module):
         return val_loader
     
     def teacher_forcing_ratio_update(self):
-        # TODO
-        raise NotImplementedError
+        if self.current_epoch >= self.tfr_sde and self.current_epoch % self.tfr_sde == 0:
+            self.tfr -= self.tfr_d_step
+            self.tfr = max(0, self.tfr)
+
             
     def tqdm_bar(self, mode, pbar, loss, lr):
         pbar.set_description(f"({mode}) Epoch {self.current_epoch}, lr:{lr}" , refresh=False)
@@ -331,6 +392,12 @@ class VAE_Model(nn.Module):
 def main(args):
     
     os.makedirs(args.save_root, exist_ok=True)
+    
+    # 將參數保存為 yaml 文件
+    import yaml
+    with open(os.path.join(args.save_root, 'config.yaml'), 'w') as f:
+        yaml.dump(vars(args), f)
+    
     model = VAE_Model(args).to(args.device)
     model.load_checkpoint()
     if args.test:
@@ -343,8 +410,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument('--batch_size',    type=int,    default=2)
-    parser.add_argument('--lr',            type=float,  default=0.001,     help="initial learning rate")
+    parser.add_argument('--batch_size',    type=int,    default=8)
+    parser.add_argument('--lr',            type=float,  default=1.0e-3,     help="initial learning rate")
     parser.add_argument('--device',        type=str, choices=["cuda", "cpu"], default="cuda")
     parser.add_argument('--optim',         type=str, choices=["Adam", "AdamW"], default="AdamW")
     parser.add_argument('--gpu',           type=int, default=1)
@@ -352,11 +419,11 @@ if __name__ == '__main__':
     parser.add_argument('--store_visualization',      action='store_true', help="If you want to see the result while training")
     parser.add_argument('--DR',            type=str, required=True,  help="Your Dataset Path")
     parser.add_argument('--save_root',     type=str, required=True,  help="The path to save your data")
-    parser.add_argument('--num_workers',   type=int, default=4)
-    parser.add_argument('--num_epoch',     type=int, default=70,     help="number of total epoch")
-    parser.add_argument('--per_save',      type=int, default=3,      help="Save checkpoint every seted epoch")
+    parser.add_argument('--num_workers',   type=int, default=16)
+    parser.add_argument('--num_epoch',     type=int, default=1000,     help="number of total epoch")
+    parser.add_argument('--per_save',      type=int, default=10,      help="Save checkpoint every seted epoch")
     parser.add_argument('--partial',       type=float, default=1.0,  help="Part of the training dataset to be trained")
-    parser.add_argument('--train_vi_len',  type=int, default=8,     help="Training video length")
+    parser.add_argument('--train_vi_len',  type=int, default=24,     help="Training video length")
     parser.add_argument('--val_vi_len',    type=int, default=630,    help="valdation video length")
     parser.add_argument('--frame_H',       type=int, default=32,     help="Height input image to be resize")
     parser.add_argument('--frame_W',       type=int, default=64,     help="Width input image to be resize")
@@ -370,7 +437,7 @@ if __name__ == '__main__':
     
     # Teacher Forcing strategy
     parser.add_argument('--tfr',           type=float, default=1.0,  help="The initial teacher forcing ratio")
-    parser.add_argument('--tfr_sde',       type=int,   default=10,   help="The epoch that teacher forcing ratio start to decay")
+    parser.add_argument('--tfr_sde',       type=int,   default=50,   help="The epoch that teacher forcing ratio start to decay")
     parser.add_argument('--tfr_d_step',    type=float, default=0.1,  help="Decay step that teacher forcing ratio adopted")
     parser.add_argument('--ckpt_path',     type=str,    default=None,help="The path of your checkpoints")   
     
