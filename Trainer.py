@@ -32,23 +32,38 @@ def kl_criterion(mu, logvar, batch_size):
   KLD /= batch_size  
   return KLD
 
-
 class kl_annealing():
     def __init__(self, args, current_epoch=0):
-        # TODO
-        raise NotImplementedError
+        self.annealing_type = args.kl_anneal_type
+        assert self.annealing_type in ["Cyclical", "Monotonic", "Without"]
+        self.iter = current_epoch + 1
+        
+        if self.annealing_type == "Cyclical":
+            self.L = self.frange_cycle_linear(num_epoch=args.num_epoch, start=0.0, stop=1.0,  n_cycle=args.kl_anneal_cycle, ratio=args.kl_anneal_ratio)
+        elif self.annealing_type == "Monotonic":
+            self.L = self.frange_cycle_linear(num_epoch=args.num_epoch, start=0.0, stop=1.0,  n_cycle=1, ratio=args.kl_anneal_ratio)
+        else:
+            self.L = np.ones(args.num_epoch + 1)
         
     def update(self):
-        # TODO
-        raise NotImplementedError
+        self.iter += 1
     
     def get_beta(self):
-        # TODO
-        raise NotImplementedError
+        return self.L[self.iter]
 
-    def frange_cycle_linear(self, n_iter, start=0.0, stop=1.0,  n_cycle=1, ratio=1):
-        # TODO
-        raise NotImplementedError
+    def frange_cycle_linear(self, num_epoch, start=0.0, stop=1.0,  n_cycle=1, ratio=1):
+        # adapted from https://github.com/haofuml/cyclical_annealing
+        L = np.ones(num_epoch + 1)
+        period = num_epoch / n_cycle
+        step = (stop - start) / (period * ratio)
+
+        for c in range(n_cycle):
+            v , i = start , 0
+            while v <= stop and (int(i+c*period) < num_epoch):
+                L[int(i + c * period)] = v
+                v += step
+                i += 1
+        return L  
         
 
 class VAE_Model(nn.Module):
@@ -91,10 +106,12 @@ class VAE_Model(nn.Module):
             train_loader = self.train_dataloader()
             adapt_TeacherForcing = True if random.random() < self.tfr else False
             
+            train_losses = []
             for (img, label) in (pbar := tqdm(train_loader, ncols=120)):
                 img = img.to(self.args.device)
                 label = label.to(self.args.device)
                 loss = self.training_one_step(img, label, adapt_TeacherForcing)
+                train_losses.append(loss.detach().cpu())
                 
                 beta = self.kl_annealing.get_beta()
                 if adapt_TeacherForcing:
@@ -122,8 +139,51 @@ class VAE_Model(nn.Module):
             self.tqdm_bar('val', pbar, loss.detach().cpu(), lr=self.scheduler.get_last_lr()[0])
     
     def training_one_step(self, img, label, adapt_TeacherForcing):
-        # TODO
-        raise NotImplementedError
+        # img_batch: (Batch_size, Time_step, Channel, Height, Width) = (2, 16, 3, 32, 64)
+        batch_size = img.shape[0]
+        time_step = img.shape[1]
+        channel = img.shape[2]
+        height = img.shape[3]
+        width = img.shape[4]
+        
+        f_dim = self.args.F_dim
+        l_dim = self.args.L_dim
+
+        beta = self.kl_annealing.get_beta()
+
+        frame_emb = self.frame_transformation(img.view(-1, channel, height, width))
+        frame_emb = frame_emb.view(batch_size, time_step, f_dim, height, width)
+        
+        no_head_frame_emb = frame_emb[:,1:].reshape(-1, f_dim, height, width)
+        no_tail_frame_emb = frame_emb[:,:-1].reshape(-1, f_dim, height, width)
+        
+        label_batch_time_z = self.label_transformation(label.view(-1, channel, height, width))
+        label_batch_time_z = label_batch_time_z.view(batch_size, time_step, l_dim, height, width)
+        no_head_label_emb = label_batch_time_z[:,1:].reshape(-1, l_dim, height, width)
+
+
+        z, mu, logvar = self.Gaussian_Predictor(no_head_frame_emb, no_head_label_emb)
+        kld = self.kl_criterion(mu, logvar)
+
+        decoded = self.Decoder_Fusion(no_tail_frame_emb, no_head_label_emb, z)
+        img_hat = self.Generator(decoded)
+        mse = self.mse_criterion(img_hat, img[:,1:].reshape(-1, channel, height, width))
+
+        loss = mse + beta * kld
+        self.optim.zero_grad()
+        loss.backward()
+        self.optimizer_step()
+
+        return loss
+
+
+    def kl_criterion(self, mu, logvar):
+        return kl_criterion(mu, logvar, self.batch_size)
+
+
+
+        # 
+
     
     def val_one_step(self, img, label):
         # TODO
@@ -233,7 +293,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_epoch',     type=int, default=70,     help="number of total epoch")
     parser.add_argument('--per_save',      type=int, default=3,      help="Save checkpoint every seted epoch")
     parser.add_argument('--partial',       type=float, default=1.0,  help="Part of the training dataset to be trained")
-    parser.add_argument('--train_vi_len',  type=int, default=16,     help="Training video length")
+    parser.add_argument('--train_vi_len',  type=int, default=3,     help="Training video length")
     parser.add_argument('--val_vi_len',    type=int, default=630,    help="valdation video length")
     parser.add_argument('--frame_H',       type=int, default=32,     help="Height input image to be resize")
     parser.add_argument('--frame_W',       type=int, default=64,     help="Width input image to be resize")
