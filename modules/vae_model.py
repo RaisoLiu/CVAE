@@ -321,30 +321,26 @@ class VAE_Model(nn.Module):
     #     return loss, np.mean(PSNR), generated_frames
     def training_one_step_without_teacher_forcing(self, img, label):
         # img_batch: (Batch_size, Time_step, Channel, Height, Width) = (2, 16, 3, 32, 64)
-
         batch_size, time_step, channel, height, width = img.shape
+        f_dim, l_dim, n_dim = self.args.F_dim, self.args.L_dim, self.args.N_dim
         beta = self.kl_annealing.get_beta()
-        f_dim = self.args.F_dim
-        l_dim = self.args.L_dim
-        n_dim = self.args.N_dim
 
         no_head_label = label[:,1:].reshape(-1, channel, height, width)
         no_head_label_emb = self.label_transformation(no_head_label)
         no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, l_dim, height, width)
+
         prev_frame = img[:,0].reshape(-1, channel, height, width)
-        prev_frame_emb = self.frame_transformation(prev_frame)
+        prev_frame_emb = self.frame_transformation(prev_frame).detach()
         prev_z = torch.randn(batch_size, n_dim, height, width).to(self.args.device)
-        pred_no_head_img = []
-        mu_list = []
-        logvar_list = []
+        pred_no_head_img, mu_list, logvar_list = [], [], []
         for i in range(1, time_step):
             decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
             img_hat = self.Generator(decoded)
             pred_no_head_img.append(img_hat.detach())
             prev_frame = img_hat
-            prev_frame_emb = self.frame_transformation(prev_frame)
+            prev_frame_emb = self.frame_transformation(prev_frame).detach()
             z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
-            prev_z = z#.detach()
+            prev_z = z.detach()
             mu_list.append(mu)
             logvar_list.append(logvar)
 
@@ -360,6 +356,12 @@ class VAE_Model(nn.Module):
         self.optim.zero_grad()
         loss.backward()
         self.optimizer_step()
+        self.writer.add_scalar(
+            "kld/train", kld.item(), self.current_epoch
+        )
+        self.writer.add_scalar(
+            "mse/train", mse.item(), self.current_epoch
+        )
         return loss
 
         
@@ -368,11 +370,8 @@ class VAE_Model(nn.Module):
 
     def training_one_step_with_teacher_forcing(self, img, label):   
         batch_size, time_step, channel, height, width = img.shape
+        f_dim, l_dim, n_dim = self.args.F_dim, self.args.L_dim, self.args.N_dim
         beta = self.kl_annealing.get_beta()
-        f_dim = self.args.F_dim
-        l_dim = self.args.L_dim
-        n_dim = self.args.N_dim
-
         
 
         frame_emb = self.frame_transformation(img.view(-1, channel, height, width))
@@ -393,15 +392,19 @@ class VAE_Model(nn.Module):
         self.optim.zero_grad()
         loss.backward()
         self.optimizer_step()
+        self.writer.add_scalar(
+            "kld/train", kld.item(), self.current_epoch
+        )
+        self.writer.add_scalar(
+            "mse/train", mse.item(), self.current_epoch
+        )
         return loss
 
 
     def val_one_step(self, img, label):
         batch_size, time_step, channel, height, width = img.shape
+        f_dim, l_dim, n_dim = self.args.F_dim, self.args.L_dim, self.args.N_dim
         beta = self.kl_annealing.get_beta()
-        f_dim = self.args.F_dim
-        l_dim = self.args.L_dim
-        n_dim = self.args.N_dim
 
         PSNR = []
         generated_frames = []
@@ -415,46 +418,35 @@ class VAE_Model(nn.Module):
         pred_no_head_img = []
         mu_list = []
         logvar_list = []
+        generated_frames.append(prev_frame[0].cpu())
+
         for i in range(1, time_step):
-
             decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
-
             img_hat = self.Generator(decoded)
-
-            pred_no_head_img.append(img_hat.detach())
-
+            pred_no_head_img.append(img_hat)
             prev_frame = img_hat
-            generated_frames.append(prev_frame[0].cpu())
-
             prev_frame_emb = self.frame_transformation(prev_frame)
-
             z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
-
-            prev_z = z.detach()
-
+            prev_z = z
             mu_list.append(mu)
-
             logvar_list.append(logvar)
-
             PSNR.append(Generate_PSNR(img_hat, img[:,i]).item())
             generated_frames.append(img_hat[0].cpu())
         
 
-        pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
-
-        mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), img[:,1:].reshape(-1, channel, height, width))
-
-        
-
+        pred_no_head_img = torch.stack(pred_no_head_img, dim=1)        
         mu = torch.stack(mu_list, dim=1)
-
         logvar = torch.stack(logvar_list, dim=1)
-
         kld = self.kl_criterion(mu, logvar)
-
-        
-
+        mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), img[:,1:].reshape(-1, channel, height, width))
         loss = mse + beta * kld
+
+        self.writer.add_scalar(
+            "kld/val", kld.item(), self.current_epoch
+        )
+        self.writer.add_scalar(
+            "mse/val", mse.item(), self.current_epoch
+        )
 
         return loss, np.mean(PSNR), generated_frames
 

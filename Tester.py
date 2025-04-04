@@ -43,7 +43,7 @@ from glob import glob
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset as torchData
 from torchvision.datasets.folder import default_loader as imgloader
-
+from dataloader import Dataset_Dance
 
 class Dataset_Dance(torchData):
     def __init__(self, root, transform, mode="test", video_len=7, partial=1.0):
@@ -51,7 +51,7 @@ class Dataset_Dance(torchData):
         self.img_folder = []
         self.label_folder = []
 
-        data_num = len(glob("./Demo_Test/*"))
+        data_num = len(glob(os.path.join(root, f"test/test_img/*")))
         for i in range(data_num):
             self.img_folder.append(
                 sorted(glob(os.path.join(root, f"test/test_img/{i}/*")), key=get_key)
@@ -109,7 +109,8 @@ class Test_model(VAE_Model):
     def eval(self):
         val_loader = self.val_dataloader()
         pred_seq_list = []
-        for idx, (img, label) in enumerate(tqdm(val_loader, ncols=80)):
+        print("Evaluating..., length of val_loader:", len(val_loader))
+        for idx, (img, label) in enumerate(val_loader):
             img = img.to(self.args.device)
             label = label.to(self.args.device)
             pred_seq = self.val_one_step(img, label, idx)
@@ -125,41 +126,52 @@ class Test_model(VAE_Model):
             index=False,
         )
 
-    # def val_one_step(self, img, label, idx=0):
-    #     img = img.permute(1, 0, 2, 3, 4)  # change tensor into (seq, B, C, H, W)
-    #     label = label.permute(1, 0, 2, 3, 4)  # change tensor into (seq, B, C, H, W)
-    #     assert label.shape[0] == 630, "Testing pose seqence should be 630"
-    #     assert img.shape[0] == 1, "Testing video seqence should be 1"
+    def val_one_step(self, img, label, idx=0):
+        batch_size, time_step, channel, height, width = label.shape
+        f_dim, l_dim, n_dim = self.args.F_dim, self.args.L_dim, self.args.N_dim
 
-    #     # decoded_frame_list is used to store the predicted frame seq
-    #     # label_list is used to store the label seq
-    #     # Both list will be used to make gif
-    #     decoded_frame_list = [img[0].cpu()]
-    #     label_list = []
 
-    #     # TODO
-    #     raise NotImplementedError
 
-    #     # Please do not modify this part, it is used for visulization
-    #     generated_frame = stack(decoded_frame_list).permute(1, 0, 2, 3, 4)
-    #     label_frame = stack(label_list).permute(1, 0, 2, 3, 4)
+        generated_frames = []
 
-    #     assert generated_frame.shape == (
-    #         1,
-    #         630,
-    #         3,
-    #         32,
-    #         64,
-    #     ), f"The shape of output should be (1, 630, 3, 32, 64), but your output shape is {generated_frame.shape}"
+        no_head_label = label[:,1:].reshape(-1, channel, height, width)
+        no_head_label_emb = self.label_transformation(no_head_label)
+        no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, l_dim, height, width)
+        prev_frame = img[:,0].reshape(-1, channel, height, width)
+        prev_frame_emb = self.frame_transformation(prev_frame)
+        prev_z = torch.randn(batch_size, n_dim, height, width).to(self.args.device)
+        generated_frames.append(prev_frame[0].cpu())
 
-    #     self.make_gif(
-    #         generated_frame[0], os.path.join(self.args.save_root, f"pred_seq{idx}.gif")
-    #     )
+        for i in tqdm(range(1, time_step)):
+            decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
+            img_hat = self.Generator(decoded)
+            prev_frame = img_hat
+            prev_frame_emb = self.frame_transformation(prev_frame)
+            z, _, _ = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
+            prev_z = z
+            generated_frames.append(img_hat[0].cpu())
+        
+    
+        generated_frames = torch.stack(generated_frames, dim=0)        
+        print('generated_frame:', generated_frames.shape)
 
-    #     # Reshape the generated frame to (630, 3 * 64 * 32)
-    #     generated_frame = generated_frame.reshape(630, -1)
+        generated_frames = generated_frames.unsqueeze(0)
+        assert generated_frames.shape == (
+            1,
+            630,
+            3,
+            32,
+            64,
+        ), f"The shape of output should be (1, 630, 3, 32, 64), but your output shape is {generated_frames.shape}"
 
-    #     return generated_frame
+        self.make_gif(
+            generated_frames[0], os.path.join(self.args.save_root, f"pred_seq{idx}.gif")
+        )
+
+        # Reshape the generated frame to (630, 3 * 64 * 32)
+        generated_frames = generated_frames.reshape(630, -1)
+
+        return generated_frames
 
     def make_gif(self, images_list, img_name):
         new_list = []
@@ -185,6 +197,7 @@ class Test_model(VAE_Model):
         dataset = Dataset_Dance(
             root=self.args.DR, transform=transform, video_len=self.val_vi_len
         )
+        print('Length of dataset:', len(dataset))
         val_loader = DataLoader(
             dataset,
             batch_size=1,
