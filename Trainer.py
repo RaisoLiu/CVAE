@@ -34,9 +34,9 @@ def parse_milestones(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument(
-        "--lr", type=float, default=3e-4, help="initial learning rate"
+        "--lr", type=float, default=1e-3, help="initial learning rate"
     )
     parser.add_argument("--device", type=str, choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--optim", type=str, choices=["Adam", "AdamW"], default="AdamW")
@@ -53,10 +53,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_workers", type=int, default=15)
     parser.add_argument(
-        "--num_epoch", type=int, default=30, help="number of total epoch"
+        "--num_epoch", type=int, default=70, help="number of total epoch"
     )
     parser.add_argument(
-        "--per_save", type=int, default=5, help="Save checkpoint every seted epoch"
+        "--per_save", type=int, default=1, help="Save checkpoint every seted epoch"
     )
     parser.add_argument(
         "--partial",
@@ -65,7 +65,7 @@ if __name__ == "__main__":
         help="Part of the training dataset to be trained",
     )
     parser.add_argument(
-        "--train_vi_len", type=int, default=48, help="Training video length"
+        "--train_vi_len", type=int, default=16, help="Training video length"
     )
     parser.add_argument(
         "--val_vi_len", type=int, default=630, help="valdation video length"
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tfr_sde",
         type=int,
-        default=3,
+        default=10,
         help="The epoch that teacher forcing ratio start to decay",
     )
     parser.add_argument(
@@ -129,19 +129,20 @@ if __name__ == "__main__":
 
     # Kl annealing stratedy arguments
     parser.add_argument("--kl_anneal_type", type=str, default="Cyclical", help="")
-    parser.add_argument("--kl_anneal_cycle", type=int, default=25, help="")
+    parser.add_argument("--kl_anneal_cycle", type=int, default=10, help="")
     parser.add_argument("--kl_anneal_ratio", type=float, default=1, help="")
 
     # Learning rate scheduler milestones
     parser.add_argument(
         "--milestones",
         type=str,
+        default="2,4",
         help="Comma-separated list of epochs for learning rate decay",
     )
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.3,
+        default=0.1,
         help="Multiplicative factor of learning rate decay",
     )
 

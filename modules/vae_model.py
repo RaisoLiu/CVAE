@@ -150,7 +150,7 @@ class VAE_Model(nn.Module):
         save_imgs = []
         first_batch = True
 
-        for img, label in (pbar := tqdm(val_loader, ncols=120)):
+        for img, label in val_loader:
             img = img.to(self.args.device)
             label = label.to(self.args.device)
             loss, PSNR, generated_imgs = self.val_one_step(img, label)
@@ -162,9 +162,7 @@ class VAE_Model(nn.Module):
                 save_imgs.extend([img.cpu() for img in generated_imgs])
                 first_batch = False
 
-            self.tqdm_bar(
-                "val", pbar, loss.detach().cpu(), lr=self.scheduler.get_last_lr()[0]
-            )
+
 
         # 保存GIF
         if len(save_imgs) > 0 and self.current_epoch % self.args.per_save == 0:
@@ -179,146 +177,284 @@ class VAE_Model(nn.Module):
         self.writer.add_scalar("PSNR/val", np.mean(PSNRS), self.current_epoch)
         return np.mean(val_losses), np.mean(PSNRS)
 
-    def training_one_step_without_teacher_forcing(self, img, label):
-        batch_size, time_step, channel, height, width = img.shape
-        beta = self.kl_annealing.get_beta()
+    # def training_one_step_without_teacher_forcing(self, img, label):
+    #     batch_size, time_step, channel, height, width = img.shape
+    #     beta = self.kl_annealing.get_beta()
 
-        with autocast("cuda"):
-            no_head_label_emb, _, _ = self._process_frame_features(img, label)
+    #     with autocast("cuda"):
+    #         no_head_label_emb, _, _ = self._process_frame_features(img, label)
 
-            prev_frame = img[:, 0].reshape(-1, channel, height, width)
-            prev_frame_emb = self.frame_transformation(prev_frame)
-            prev_z = torch.randn(batch_size, self.args.N_dim, height, width).to(
-                self.args.device
-            )
+    #         prev_frame = img[:, 0].reshape(-1, channel, height, width)
+    #         prev_frame_emb = self.frame_transformation(prev_frame)
+    #         prev_z = torch.randn(batch_size, self.args.N_dim, height, width).to(
+    #             self.args.device
+    #         )
 
-            pred_no_head_img_list, mu_list, logvar_list = [], [], []
-            no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, self.args.L_dim, height, width)
-            for i in range(time_step-1):
-                img_hat = self._generate_next_frame(
-                    prev_frame_emb, no_head_label_emb[:, i], prev_z
-                )
-                pred_no_head_img_list.append(img_hat.detach())
+    #         pred_no_head_img_list, mu_list, logvar_list = [], [], []
+    #         no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, self.args.L_dim, height, width)
+    #         for i in range(time_step-1):
+    #             img_hat = self._generate_next_frame(
+    #                 prev_frame_emb, no_head_label_emb[:, i], prev_z
+    #             )
+    #             pred_no_head_img_list.append(img_hat.detach())
 
-                prev_frame_emb = self.frame_transformation(img_hat)
-                z, mu, logvar = self.Gaussian_Predictor(
-                    prev_frame_emb, no_head_label_emb[:, i]
-                )
-                prev_z = z
-                mu_list.append(mu)
-                logvar_list.append(logvar)
+    #             prev_frame_emb = self.frame_transformation(img_hat)
+    #             z, mu, logvar = self.Gaussian_Predictor(
+    #                 prev_frame_emb, no_head_label_emb[:, i]
+    #             )
+    #             prev_z = z
+    #             mu_list.append(mu)
+    #             logvar_list.append(logvar)
 
-            pred_no_head_img_list = torch.stack(pred_no_head_img_list, dim=1)
-            mse = self.mse_criterion(
-                pred_no_head_img_list.view(-1, channel, height, width),
-                img[:, 1:].reshape(-1, channel, height, width),
-            )
+    #         pred_no_head_img_list = torch.stack(pred_no_head_img_list, dim=1)
+    #         mse = self.mse_criterion(
+    #             pred_no_head_img_list.view(-1, channel, height, width),
+    #             img[:, 1:].reshape(-1, channel, height, width),
+    #         )
 
-            mu = torch.stack(mu_list, dim=1)
-            logvar = torch.stack(logvar_list, dim=1)
-            kld = self.kl_criterion(mu, logvar)
+    #         mu = torch.stack(mu_list, dim=1)
+    #         logvar = torch.stack(logvar_list, dim=1)
+    #         kld = self.kl_criterion(mu, logvar)
 
-            loss = self._update_training_metrics(mse, kld, beta)
+    #         loss = self._update_training_metrics(mse, kld, beta)
 
-        self.optim.zero_grad()
-        self.scaler.scale(loss).backward()
-        self.scaler.step(self.optim)
-        self.scaler.update()
-        return loss
+    #     self.optim.zero_grad()
+    #     self.scaler.scale(loss).backward()
+    #     self.scaler.step(self.optim)
+    #     self.scaler.update()
+    #     return loss
 
-    def training_one_step_with_teacher_forcing(self, img, label):
-        beta = self.kl_annealing.get_beta()
+    # def training_one_step_with_teacher_forcing(self, img, label):
+    #     beta = self.kl_annealing.get_beta()
 
-        with autocast("cuda"):
-            no_head_label_emb, no_head_frame_emb, no_tail_frame_emb = (
-                self._process_frame_features(img, label)
-            )
+    #     with autocast("cuda"):
+    #         no_head_label_emb, no_head_frame_emb, no_tail_frame_emb = (
+    #             self._process_frame_features(img, label)
+    #         )
 
-            # Ensure dimensions match
-            assert (
-                no_head_frame_emb.dim() == no_head_label_emb.dim()
-            ), f"Dimension mismatch: frame_emb {no_head_frame_emb.shape}, label_emb {no_head_label_emb.shape}"
+    #         # Ensure dimensions match
+    #         assert (
+    #             no_head_frame_emb.dim() == no_head_label_emb.dim()
+    #         ), f"Dimension mismatch: frame_emb {no_head_frame_emb.shape}, label_emb {no_head_label_emb.shape}"
 
-            z, mu, logvar = self.Gaussian_Predictor(
-                no_head_frame_emb, no_head_label_emb
-            )
-            img_hat = self._generate_next_frame(no_tail_frame_emb, no_head_label_emb, z)
+    #         z, mu, logvar = self.Gaussian_Predictor(
+    #             no_head_frame_emb, no_head_label_emb
+    #         )
+    #         img_hat = self._generate_next_frame(no_tail_frame_emb, no_head_label_emb, z)
 
-            kld = self.kl_criterion(mu, logvar)
-            mse = self.mse_criterion(img_hat, img[:, 1:].reshape(-1, *img.shape[2:]))
-            loss = self._update_training_metrics(mse, kld, beta)
+    #         kld = self.kl_criterion(mu, logvar)
+    #         mse = self.mse_criterion(img_hat, img[:, 1:].reshape(-1, *img.shape[2:]))
+    #         loss = self._update_training_metrics(mse, kld, beta)
 
-        self.optim.zero_grad()
-        self.scaler.scale(loss).backward()
-        self.scaler.step(self.optim)
-        self.scaler.update()
-        return loss
+    #     self.optim.zero_grad()
+    #     self.scaler.scale(loss).backward()
+    #     self.scaler.step(self.optim)
+    #     self.scaler.update()
+    #     return loss
 
     def kl_criterion(self, mu, logvar):
         KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         KLD /= self.batch_size
         return KLD
 
+    # def val_one_step(self, img, label):
+    #     batch_size, time_step, channel, height, width = img.shape
+    #     beta = self.kl_annealing.get_beta()
+    #     PSNR = []
+    #     generated_frames = []
+
+    #     with autocast("cuda"):
+    #         no_head_label_emb, _, _ = self._process_frame_features(img, label)
+
+    #         prev_frame = img[:, 0].reshape(-1, channel, height, width)
+    #         prev_frame_emb = self.frame_transformation(prev_frame)
+    #         prev_z = torch.randn(batch_size, self.args.N_dim, height, width).to(
+    #             self.args.device
+    #         )
+
+    #         generated_frames.append(prev_frame[0].cpu())
+    #         pred_no_head_img = []
+    #         mu_list = []
+    #         logvar_list = []
+
+    #         for i in range(1, time_step):
+    #             # Ensure label_emb has correct dimensions
+    #             current_label_emb = no_head_label_emb[i - 1 : i].squeeze(0)
+    #             if current_label_emb.dim() == 3:
+    #                 current_label_emb = current_label_emb.unsqueeze(0)
+
+    #             img_hat = self._generate_next_frame(
+    #                 prev_frame_emb, current_label_emb, prev_z
+    #             )
+    #             pred_no_head_img.append(img_hat.detach())
+
+    #             prev_frame = img_hat
+    #             prev_frame_emb = self.frame_transformation(prev_frame)
+    #             z, mu, logvar = self.Gaussian_Predictor(
+    #                 prev_frame_emb, current_label_emb
+    #             )
+    #             prev_z = z
+    #             mu_list.append(mu)
+    #             logvar_list.append(logvar)
+
+    #             PSNR.append(Generate_PSNR(img_hat, img[:, i]).item())
+    #             generated_frames.append(img_hat[0].cpu())
+
+    #         pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
+    #         mse = self.mse_criterion(
+    #             pred_no_head_img.view(-1, channel, height, width),
+    #             img[:, 1:].reshape(-1, channel, height, width),
+    #         )
+
+    #         mu = torch.stack(mu_list, dim=1)
+    #         logvar = torch.stack(logvar_list, dim=1)
+    #         kld = self.kl_criterion(mu, logvar)
+
+    #         self.writer.add_scalar(
+    #             "kld/val", kld.item(), self.current_epoch
+    #         )
+    #         self.writer.add_scalar(
+    #             "mse/val", mse.item(), self.current_epoch
+    #         )
+    #         loss = mse + beta * kld
+
+    #     return loss, np.mean(PSNR), generated_frames
+    def training_one_step_without_teacher_forcing(self, img, label):
+        # img_batch: (Batch_size, Time_step, Channel, Height, Width) = (2, 16, 3, 32, 64)
+
+        batch_size, time_step, channel, height, width = img.shape
+        beta = self.kl_annealing.get_beta()
+        f_dim = self.args.F_dim
+        l_dim = self.args.L_dim
+        n_dim = self.args.N_dim
+
+        no_head_label = label[:,1:].reshape(-1, channel, height, width)
+        no_head_label_emb = self.label_transformation(no_head_label)
+        no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, l_dim, height, width)
+        prev_frame = img[:,0].reshape(-1, channel, height, width)
+        prev_frame_emb = self.frame_transformation(prev_frame)
+        prev_z = torch.randn(batch_size, n_dim, height, width).to(self.args.device)
+        pred_no_head_img = []
+        mu_list = []
+        logvar_list = []
+        for i in range(1, time_step):
+            decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
+            img_hat = self.Generator(decoded)
+            pred_no_head_img.append(img_hat.detach())
+            prev_frame = img_hat
+            prev_frame_emb = self.frame_transformation(prev_frame)
+            z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
+            prev_z = z#.detach()
+            mu_list.append(mu)
+            logvar_list.append(logvar)
+
+        
+
+        pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
+        mu = torch.stack(mu_list, dim=1)
+        logvar = torch.stack(logvar_list, dim=1)
+        mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), img[:,1:].reshape(-1, channel, height, width))
+        kld = self.kl_criterion(mu, logvar)
+        loss = mse + beta * kld
+
+        self.optim.zero_grad()
+        loss.backward()
+        self.optimizer_step()
+        return loss
+
+        
+
+  
+
+    def training_one_step_with_teacher_forcing(self, img, label):   
+        batch_size, time_step, channel, height, width = img.shape
+        beta = self.kl_annealing.get_beta()
+        f_dim = self.args.F_dim
+        l_dim = self.args.L_dim
+        n_dim = self.args.N_dim
+
+        
+
+        frame_emb = self.frame_transformation(img.view(-1, channel, height, width))
+        frame_emb = frame_emb.view(batch_size, time_step, f_dim, height, width)
+        no_head_frame_emb = frame_emb[:,1:].reshape(-1, f_dim, height, width)
+        no_tail_frame_emb = frame_emb[:,:-1].reshape(-1, f_dim, height, width)
+        no_head_label = label[:,1:].reshape(-1, channel, height, width)
+        no_head_label_emb = self.label_transformation(no_head_label)
+        z, mu, logvar = self.Gaussian_Predictor(no_head_frame_emb, no_head_label_emb)
+        
+        decoded = self.Decoder_Fusion(no_tail_frame_emb, no_head_label_emb, z)
+        img_hat = self.Generator(decoded)
+    
+        kld = self.kl_criterion(mu, logvar)
+        mse = self.mse_criterion(img_hat, img[:,1:].reshape(-1, channel, height, width))
+        loss = mse + beta * kld
+
+        self.optim.zero_grad()
+        loss.backward()
+        self.optimizer_step()
+        return loss
+
+
     def val_one_step(self, img, label):
         batch_size, time_step, channel, height, width = img.shape
         beta = self.kl_annealing.get_beta()
+        f_dim = self.args.F_dim
+        l_dim = self.args.L_dim
+        n_dim = self.args.N_dim
+
         PSNR = []
         generated_frames = []
 
-        with autocast("cuda"):
-            no_head_label_emb, _, _ = self._process_frame_features(img, label)
+        no_head_label = label[:,1:].reshape(-1, channel, height, width)
+        no_head_label_emb = self.label_transformation(no_head_label)
+        no_head_label_emb = no_head_label_emb.view(batch_size, time_step-1, l_dim, height, width)
+        prev_frame = img[:,0].reshape(-1, channel, height, width)
+        prev_frame_emb = self.frame_transformation(prev_frame)
+        prev_z = torch.randn(batch_size, n_dim, height, width).to(self.args.device)
+        pred_no_head_img = []
+        mu_list = []
+        logvar_list = []
+        for i in range(1, time_step):
 
-            prev_frame = img[:, 0].reshape(-1, channel, height, width)
-            prev_frame_emb = self.frame_transformation(prev_frame)
-            prev_z = torch.randn(batch_size, self.args.N_dim, height, width).to(
-                self.args.device
-            )
+            decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
 
+            img_hat = self.Generator(decoded)
+
+            pred_no_head_img.append(img_hat.detach())
+
+            prev_frame = img_hat
             generated_frames.append(prev_frame[0].cpu())
-            pred_no_head_img = []
-            mu_list = []
-            logvar_list = []
 
-            for i in range(1, time_step):
-                # Ensure label_emb has correct dimensions
-                current_label_emb = no_head_label_emb[i - 1 : i].squeeze(0)
-                if current_label_emb.dim() == 3:
-                    current_label_emb = current_label_emb.unsqueeze(0)
+            prev_frame_emb = self.frame_transformation(prev_frame)
 
-                img_hat = self._generate_next_frame(
-                    prev_frame_emb, current_label_emb, prev_z
-                )
-                pred_no_head_img.append(img_hat.detach())
+            z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
 
-                prev_frame = img_hat
-                prev_frame_emb = self.frame_transformation(prev_frame)
-                z, mu, logvar = self.Gaussian_Predictor(
-                    prev_frame_emb, current_label_emb
-                )
-                prev_z = z
-                mu_list.append(mu)
-                logvar_list.append(logvar)
+            prev_z = z.detach()
 
-                PSNR.append(Generate_PSNR(img_hat, img[:, i]).item())
-                generated_frames.append(img_hat[0].cpu())
+            mu_list.append(mu)
 
-            pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
-            mse = self.mse_criterion(
-                pred_no_head_img.view(-1, channel, height, width),
-                img[:, 1:].reshape(-1, channel, height, width),
-            )
+            logvar_list.append(logvar)
 
-            mu = torch.stack(mu_list, dim=1)
-            logvar = torch.stack(logvar_list, dim=1)
-            kld = self.kl_criterion(mu, logvar)
+            PSNR.append(Generate_PSNR(img_hat, img[:,i]).item())
+            generated_frames.append(img_hat[0].cpu())
+        
 
-            self.writer.add_scalar(
-                "kld/val", kld.item(), self.current_epoch
-            )
-            self.writer.add_scalar(
-                "mse/val", mse.item(), self.current_epoch
-            )
-            loss = mse + beta * kld
+        pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
+
+        mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), img[:,1:].reshape(-1, channel, height, width))
+
+        
+
+        mu = torch.stack(mu_list, dim=1)
+
+        logvar = torch.stack(logvar_list, dim=1)
+
+        kld = self.kl_criterion(mu, logvar)
+
+        
+
+        loss = mse + beta * kld
 
         return loss, np.mean(PSNR), generated_frames
 
@@ -332,7 +468,7 @@ class VAE_Model(nn.Module):
             format="GIF",
             append_images=new_list[1:],
             save_all=True,
-            duration=40,
+            duration=60,
             loop=0,
         )
 
