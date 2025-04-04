@@ -1,2 +1,10 @@
 *__pycache__*
 epoch-1000
+results
+*.png
+*.gif
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+checkpoints
