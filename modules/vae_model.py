@@ -81,7 +81,7 @@ class VAE_Model(nn.Module):
         )
 
         # AMP scaler
-        self.use_amp = args.use_amp
+        self.use_amp = not args.no_use_amp
         self.scaler = GradScaler() if self.use_amp else None
         
         # Track best PSNR

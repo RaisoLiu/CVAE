@@ -155,10 +155,10 @@ if __name__ == "__main__":
 
     # Mixed precision training
     parser.add_argument(
-        "--use_amp",
+        "--no-use_amp",
         action="store_true",
-        default=True,
-        help="Whether to use automatic mixed precision training",
+        default=False,
+        help="Disable automatic mixed precision training",
     )
 
     args = parser.parse_args()
