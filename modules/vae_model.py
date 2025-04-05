@@ -53,7 +53,14 @@ class VAE_Model(nn.Module):
         # Generative model
         self.Generator = Generator(input_nc=args.D_out_dim, output_nc=3)
 
-        self.optim = optim.Adam(self.parameters(), lr=self.args.lr)
+        # Initialize optimizer based on args.optim
+        if args.optim == "Adam":
+            self.optim = optim.Adam(self.parameters(), lr=self.args.lr)
+        elif args.optim == "AdamW":
+            self.optim = optim.AdamW(self.parameters(), lr=self.args.lr)
+        else:
+            raise ValueError(f"Unsupported optimizer: {args.optim}")
+
         self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optim, milestones=self.args.milestones, gamma=self.args.gamma
         )
@@ -338,7 +345,7 @@ class VAE_Model(nn.Module):
             img_hat = self.Generator(decoded)
             pred_no_head_img.append(img_hat.detach())
             prev_frame = img_hat
-            prev_frame_emb = self.frame_transformation(prev_frame).detach()
+            prev_frame_emb = self.frame_transformation(prev_frame)#.detach()
             z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
             prev_z = z.detach()
             mu_list.append(mu)
@@ -472,17 +479,24 @@ class VAE_Model(nn.Module):
 
     def _get_image_transforms(self, mode="train"):
         if mode == "train":
-            return transforms.Compose(
-                [
+            transform_list = []
+            if self.args.use_random_crop:
+                transform_list.extend([
                     transforms.RandomResizedCrop(
                         (self.args.frame_H, self.args.frame_W),
                         scale=(1.0, 1.2),
                         ratio=(0.9, 1.1)
                     ),
                     transforms.RandomHorizontalFlip(p=0.3),
-                    transforms.ToTensor(),
-                ]
+                ])
+            else:
+                transform_list.append(
+                    transforms.Resize((self.args.frame_H, self.args.frame_W))
+                )
+            transform_list.append(
+                transforms.ToTensor(),
             )
+            return transforms.Compose(transform_list)
         else:
             return transforms.Compose(
                 [

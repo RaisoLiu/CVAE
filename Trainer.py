@@ -77,6 +77,13 @@ if __name__ == "__main__":
         "--frame_W", type=int, default=64, help="Width input image to be resize"
     )
 
+    # Data augmentation parameters
+    parser.add_argument(
+        "--use_random_crop",
+        action="store_true",
+        help="Whether to use random crop data augmentation",
+    )
+
     # Module parameters setting
     parser.add_argument(
         "--F_dim", type=int, default=128, help="Dimension of feature human frame"
