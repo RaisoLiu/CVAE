@@ -127,6 +127,20 @@ class VAE_Model(nn.Module):
                         lr=self.scheduler.get_last_lr()[0],
                     )
 
+            val_losses, PSNRS = self.eval()
+            mean_psnr = np.mean(PSNRS)
+
+            # 只在 PSNR 更好時保存模型
+            if mean_psnr > self.best_psnr:
+                self.best_psnr = mean_psnr
+                self.save(
+                    os.path.join(
+                        self.args.save_root, f"best_epoch-{self.current_epoch}_psnr-{mean_psnr:.4f}.ckpt"
+                    )
+                )
+                print(f"Saved best model with PSNR: {mean_psnr:.4f}")
+
+            # 定期保存模型
             if self.current_epoch % self.args.per_save == 0:
                 self.save(
                     os.path.join(
@@ -134,16 +148,14 @@ class VAE_Model(nn.Module):
                     )
                 )
 
-
             self.writer.add_scalar(
                 "Loss/train", np.mean(train_losses), self.current_epoch
             )
             self.writer.add_scalar("beta", beta, self.current_epoch)
             self.writer.add_scalar("tfr", self.tfr, self.current_epoch)
-            val_losses, PSNRS = self.eval()
 
             print(
-                f"Epoch {self.current_epoch} train loss: {np.mean(train_losses):.6f}, val loss: {np.mean(val_losses):.6f}, PSNR: {np.mean(PSNRS):.4f}, beta: {beta:.4f}, tfr: {self.tfr:.2f}"
+                f"Epoch {self.current_epoch} train loss: {np.mean(train_losses):.6f}, val loss: {np.mean(val_losses):.6f}, PSNR: {mean_psnr:.4f}, beta: {beta:.4f}, tfr: {self.tfr:.2f}"
             )
             self.current_epoch += 1
             self.scheduler.step()
@@ -216,17 +228,30 @@ class VAE_Model(nn.Module):
             pred_no_head_img = torch.stack(pred_no_head_img, dim=1)
             mu = torch.stack(mu_list, dim=1)
             logvar = torch.stack(logvar_list, dim=1)
-            mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), img[:,1:].reshape(-1, channel, height, width))
+            
+            # 計算 MSE 損失
+            mse = self.mse_criterion(pred_no_head_img.view(-1, channel, height, width), 
+                                   img[:,1:].reshape(-1, channel, height, width))
+            
+            # 計算 KL 散度損失
             kld = self.kl_criterion(mu, logvar)
+            
+            # 打印損失值以進行調試
+            if torch.isnan(mse) or torch.isnan(kld):
+                print(f"Warning: NaN detected in losses - mse: {mse.item()}, kld: {kld.item()}")
+            
+            # 計算總損失
             loss = mse + beta * kld
+            
+            # 如果損失為負數，打印詳細信息
+            if loss < 0:
+                print(f"Warning: Negative loss detected - mse: {mse.item()}, kld: {kld.item()}, beta: {beta}")
+                print(f"mu stats - min: {mu.min().item()}, max: {mu.max().item()}, mean: {mu.mean().item()}")
+                print(f"logvar stats - min: {logvar.min().item()}, max: {logvar.max().item()}, mean: {logvar.mean().item()}")
 
         self.optim.zero_grad()
         if self.use_amp:
             self.scaler.scale(loss).backward()
-            # 檢查梯度是否為 NaN 或 Inf
-            if torch.isnan(loss) or torch.isinf(loss):
-                print(f"Warning: Loss is {loss.item()}, skipping this batch")
-                return loss
             self.scaler.unscale_(self.optim)
             torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
             self.scaler.step(self.optim)
@@ -260,17 +285,28 @@ class VAE_Model(nn.Module):
             decoded = self.Decoder_Fusion(no_tail_frame_emb, no_head_label_emb, z)
             img_hat = self.Generator(decoded)
         
-            kld = self.kl_criterion(mu, logvar)
+            # 計算 MSE 損失
             mse = self.mse_criterion(img_hat, img[:,1:].reshape(-1, channel, height, width))
+            
+            # 計算 KL 散度損失
+            kld = self.kl_criterion(mu, logvar)
+            
+            # 打印損失值以進行調試
+            if torch.isnan(mse) or torch.isnan(kld):
+                print(f"Warning: NaN detected in losses - mse: {mse.item()}, kld: {kld.item()}")
+            
+            # 計算總損失
             loss = mse + beta * kld
+            
+            # 如果損失為負數，打印詳細信息
+            if loss < 0:
+                print(f"Warning: Negative loss detected - mse: {mse.item()}, kld: {kld.item()}, beta: {beta}")
+                print(f"mu stats - min: {mu.min().item()}, max: {mu.max().item()}, mean: {mu.mean().item()}")
+                print(f"logvar stats - min: {logvar.min().item()}, max: {logvar.max().item()}, mean: {logvar.mean().item()}")
 
         self.optim.zero_grad()
         if self.use_amp:
             self.scaler.scale(loss).backward()
-            # 檢查梯度是否為 NaN 或 Inf
-            if torch.isnan(loss) or torch.isinf(loss):
-                print(f"Warning: Loss is {loss.item()}, skipping this batch")
-                return loss
             self.scaler.unscale_(self.optim)
             torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
             self.scaler.step(self.optim)
@@ -490,5 +526,7 @@ class VAE_Model(nn.Module):
 
     def kl_criterion(self, mu, logvar):
         KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        KLD /= self.batch_size
+        KLD = KLD / self.batch_size
+        # 確保 KL 散度不會變成負數
+        KLD = torch.clamp(KLD, min=0.0)
         return KLD
