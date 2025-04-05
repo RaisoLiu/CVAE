@@ -82,7 +82,7 @@ class VAE_Model(nn.Module):
 
         # AMP scaler
         self.use_amp = not args.no_use_amp
-        self.scaler = GradScaler() if self.use_amp else None
+        self.scaler = GradScaler(init_scale=2.0**16) if self.use_amp else None
         
         # Track best PSNR
         self.best_psnr = 0.0
@@ -223,6 +223,12 @@ class VAE_Model(nn.Module):
         self.optim.zero_grad()
         if self.use_amp:
             self.scaler.scale(loss).backward()
+            # 檢查梯度是否為 NaN 或 Inf
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"Warning: Loss is {loss.item()}, skipping this batch")
+                return loss
+            self.scaler.unscale_(self.optim)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
             self.scaler.step(self.optim)
             self.scaler.update()
         else:
@@ -261,6 +267,12 @@ class VAE_Model(nn.Module):
         self.optim.zero_grad()
         if self.use_amp:
             self.scaler.scale(loss).backward()
+            # 檢查梯度是否為 NaN 或 Inf
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"Warning: Loss is {loss.item()}, skipping this batch")
+                return loss
+            self.scaler.unscale_(self.optim)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
             self.scaler.step(self.optim)
             self.scaler.update()
         else:
