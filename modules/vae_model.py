@@ -83,6 +83,9 @@ class VAE_Model(nn.Module):
         # AMP scaler
         self.use_amp = args.use_amp
         self.scaler = GradScaler() if self.use_amp else None
+        
+        # Track best PSNR
+        self.best_psnr = 0.0
 
     def forward(self, img, label):
         pass
@@ -170,20 +173,20 @@ class VAE_Model(nn.Module):
                 save_imgs.extend([img.cpu() for img in generated_imgs])
                 first_batch = False
 
-
-
+        mean_psnr = np.mean(PSNRS)
+        
         # 保存GIF
-        if len(save_imgs) > 0 and self.current_epoch % self.args.per_save == 0:
+        if len(save_imgs) > 0 and self.current_epoch % self.args.per_save == 0 and mean_psnr > self.best_psnr:
+            self.best_psnr = mean_psnr
             save_path = os.path.join(
                 self.args.save_root, f"val_demo_epoch_{self.current_epoch}.gif"
             )
             self.make_gif(save_imgs, save_path)
-            print(f"Saved validation demo GIF to {save_path}")
-
+            print(f"Saved validation demo GIF to {save_path} (PSNR: {mean_psnr:.4f})")
 
         self.writer.add_scalar("Loss/val", np.mean(val_losses), self.current_epoch)
-        self.writer.add_scalar("PSNR/val", np.mean(PSNRS), self.current_epoch)
-        return np.mean(val_losses), np.mean(PSNRS)
+        self.writer.add_scalar("PSNR/val", mean_psnr, self.current_epoch)
+        return np.mean(val_losses), mean_psnr
 
     def training_one_step_without_teacher_forcing(self, img, label):
         batch_size, time_step, channel, height, width = img.shape
