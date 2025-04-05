@@ -470,16 +470,29 @@ class VAE_Model(nn.Module):
             loop=0,
         )
 
-    def _get_image_transforms(self):
-        return transforms.Compose(
-            [
-                transforms.Resize((self.args.frame_H, self.args.frame_W)),
-                transforms.ToTensor(),
-            ]
-        )
+    def _get_image_transforms(self, mode="train"):
+        if mode == "train":
+            return transforms.Compose(
+                [
+                    transforms.RandomResizedCrop(
+                        (self.args.frame_H, self.args.frame_W),
+                        scale=(1.0, 1.2),
+                        ratio=(0.9, 1.1)
+                    ),
+                    transforms.RandomHorizontalFlip(p=0.3),
+                    transforms.ToTensor(),
+                ]
+            )
+        else:
+            return transforms.Compose(
+                [
+                    transforms.Resize((self.args.frame_H, self.args.frame_W)),
+                    transforms.ToTensor(),
+                ]
+            )
 
     def _get_dataloader(self, mode, video_len, partial, batch_size=None):
-        transform = self._get_image_transforms()
+        transform = self._get_image_transforms(mode)
         dataset = Dataset_Dance(
             root=self.args.DR,
             transform=transform,
