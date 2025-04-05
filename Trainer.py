@@ -53,7 +53,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_workers", type=int, default=15)
     parser.add_argument(
-        "--num_epoch", type=int, default=70, help="number of total epoch"
+        "--num_epoch", type=int, default=100, help="number of total epoch"
     )
     parser.add_argument(
         "--per_save", type=int, default=1, help="Save checkpoint every seted epoch"
@@ -65,7 +65,7 @@ if __name__ == "__main__":
         help="Part of the training dataset to be trained",
     )
     parser.add_argument(
-        "--train_vi_len", type=int, default=16, help="Training video length"
+        "--train_vi_len", type=int, default=128, help="Training video length"
     )
     parser.add_argument(
         "--val_vi_len", type=int, default=630, help="valdation video length"
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tfr_sde",
         type=int,
-        default=10,
+        default=25,
         help="The epoch that teacher forcing ratio start to decay",
     )
     parser.add_argument(

@@ -53,7 +53,7 @@ class VAE_Model(nn.Module):
         # Generative model
         self.Generator = Generator(input_nc=args.D_out_dim, output_nc=3)
 
-        self.optim = optim.AdamW(self.parameters(), lr=self.args.lr)
+        self.optim = optim.Adam(self.parameters(), lr=self.args.lr)
         self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optim, milestones=self.args.milestones, gamma=self.args.gamma
         )
@@ -418,7 +418,10 @@ class VAE_Model(nn.Module):
         pred_no_head_img = []
         mu_list = []
         logvar_list = []
-        generated_frames.append(prev_frame[0].cpu())
+        
+        # 將第一幀的 label 和預測圖像上下排列
+        first_frame = torch.cat([label[0,0], prev_frame[0]], dim=1)  # 在高度維度上堆疊
+        generated_frames.append(first_frame.cpu())
 
         for i in range(1, time_step):
             decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
@@ -431,7 +434,10 @@ class VAE_Model(nn.Module):
             mu_list.append(mu)
             logvar_list.append(logvar)
             PSNR.append(Generate_PSNR(img_hat, img[:,i]).item())
-            generated_frames.append(img_hat[0].cpu())
+            
+            # 將 label 和預測圖像上下排列
+            combined_frame = torch.cat([label[0,i], img_hat[0]], dim=1)  # 在高度維度上堆疊
+            generated_frames.append(combined_frame.cpu())
         
 
         pred_no_head_img = torch.stack(pred_no_head_img, dim=1)        
