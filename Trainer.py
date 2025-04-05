@@ -39,7 +39,7 @@ if __name__ == "__main__":
         "--lr", type=float, default=1e-3, help="initial learning rate"
     )
     parser.add_argument("--device", type=str, choices=["cuda", "cpu"], default="cuda")
-    parser.add_argument("--optim", type=str, choices=["Adam", "AdamW"], default="AdamW")
+    parser.add_argument("--optim", type=str, choices=["Adam", "AdamW"], default="Adam")
     parser.add_argument("--gpu", type=int, default=1)
     parser.add_argument("--test", action="store_true")
     parser.add_argument(

@@ -343,7 +343,7 @@ class VAE_Model(nn.Module):
         for i in range(1, time_step):
             decoded = self.Decoder_Fusion(prev_frame_emb, no_head_label_emb[:,i-1], prev_z)
             img_hat = self.Generator(decoded)
-            pred_no_head_img.append(img_hat.detach())
+            pred_no_head_img.append(img_hat)#.detach())
             prev_frame = img_hat
             prev_frame_emb = self.frame_transformation(prev_frame)#.detach()
             z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
