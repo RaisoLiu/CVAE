@@ -161,6 +161,14 @@ if __name__ == "__main__":
         help="Disable automatic mixed precision training",
     )
 
+    # Debug flag
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Enable debug print statements",
+    )
+
     args = parser.parse_args()
     args = parse_milestones(args)
 

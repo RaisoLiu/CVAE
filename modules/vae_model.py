@@ -37,6 +37,7 @@ class VAE_Model(nn.Module):
     def __init__(self, args):
         super(VAE_Model, self).__init__()
         self.args = args
+        self.debug = args.debug
 
         # Modules to transform image from RGB-domain to feature-domain
         self.frame_transformation = RGB_Encoder(3, args.F_dim)
@@ -221,7 +222,7 @@ class VAE_Model(nn.Module):
                 prev_frame = img_hat
                 prev_frame_emb = self.frame_transformation(prev_frame)
                 z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, no_head_label_emb[:,i-1])
-                prev_z = z.detach()
+                prev_z = z
                 mu_list.append(mu)
                 logvar_list.append(logvar)
 
@@ -236,6 +237,14 @@ class VAE_Model(nn.Module):
             # 計算 KL 散度損失
             kld = self.kl_criterion(mu, logvar)
             
+            # 添加調試打印
+            if self.debug:
+                print(f"\n--- Debug Step (no TF) ---")
+                print(f"MSE: {mse.item():.4f}, KLD: {kld.item():.4f}, Beta: {beta:.4f}")
+                print(f"mu stats - min: {mu.min().item():.4f}, max: {mu.max().item():.4f}, mean: {mu.mean().item():.4f}")
+                print(f"logvar stats - min: {logvar.min().item():.4f}, max: {logvar.max().item():.4f}, mean: {logvar.mean().item():.4f}")
+                # -------------------
+
             # 打印損失值以進行調試
             if torch.isnan(mse) or torch.isnan(kld):
                 print(f"Warning: NaN detected in losses - mse: {mse.item()}, kld: {kld.item()}")
@@ -291,6 +300,14 @@ class VAE_Model(nn.Module):
             # 計算 KL 散度損失
             kld = self.kl_criterion(mu, logvar)
             
+            # 添加調試打印
+            if self.debug:
+                print(f"\n--- Debug Step (TF) ---")
+                print(f"MSE: {mse.item():.4f}, KLD: {kld.item():.4f}, Beta: {beta:.4f}")
+                print(f"mu stats - min: {mu.min().item():.4f}, max: {mu.max().item():.4f}, mean: {mu.mean().item():.4f}")
+                print(f"logvar stats - min: {logvar.min().item():.4f}, max: {logvar.max().item():.4f}, mean: {logvar.mean().item():.4f}")
+                # -------------------
+
             # 打印損失值以進行調試
             if torch.isnan(mse) or torch.isnan(kld):
                 print(f"Warning: NaN detected in losses - mse: {mse.item()}, kld: {kld.item()}")
@@ -525,8 +542,10 @@ class VAE_Model(nn.Module):
         self.optim.step()
 
     def kl_criterion(self, mu, logvar):
-        KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        KLD = KLD / self.batch_size
+        # KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        # KLD = KLD / self.batch_size
+        # 使用 torch.mean() 計算所有維度的平均值
+        KLD = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
         # 確保 KL 散度不會變成負數
         KLD = torch.clamp(KLD, min=0.0)
         return KLD
